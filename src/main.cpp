@@ -17,11 +17,9 @@ const int AS5600_PIN = 35;
 volatile unsigned long conteoCajas = 0;  
 int estadoAnterior = HIGH;
 
-// Sensor E18D80NK
-
-// Wi-Fi
-const char *ssid = "ESP32_Cautivo";
-const char *password = "12345678";
+// Access Point
+const char* AP_SSID = "ESP32_AP";
+const char* AP_PASS = "12345678";
 
 // Prototipado
 void mostrarMenu();
@@ -30,6 +28,9 @@ void leerE18D80NK();
 void inicializarAS5600();
 int leerAS5600();
 int leerAS5600Raw();
+void conectarWiFi();
+void iniciarPortalCautivo();
+void flushBluetoothInput();
 
 // Setup
 void setup() {
@@ -67,24 +68,23 @@ void loop() {
       }
 
       case '2': {
-        inicializarE18D80NK();
         leerE18D80NK();
+        break;
       }
 
       case '3':
-        // Wi-Fi
+        conectarWiFi();
         break;
 
       case '4':
-        // Portal Cautivo
-        SerialBT.println("Portal cautivo activado.");
+        iniciarPortalCautivo();
         break;
 
       default:
         if (opcion != '\n' && opcion != '\r') {
           SerialBT.print("Opcion '");
           SerialBT.print(opcion);
-          SerialBT.println("' invalida. Elige 1 a 6.");
+          SerialBT.println("' invalida. Elige 1 a 4.");
         }
         break;
     }
@@ -128,7 +128,7 @@ void leerE18D80NK() {
 
 void inicializarAS5600() {
   Wire.begin();
-  as5600.begin(4); // pin de dirección
+  as5600.begin(4);
   as5600.setDirection(AS5600_CLOCK_WISE);
 
   if (as5600.isConnected()) {
@@ -144,4 +144,77 @@ int leerAS5600() {
 
 int leerAS5600Raw() {
   return as5600.rawAngle();
+}
+
+void conectarWiFi() {
+  String ssid = "";
+  String password = "";
+
+  // Limpiar buffer antes de empezar
+  flushBluetoothInput();
+  
+  SerialBT.println("Ingresa SSID de la red WiFi:"); 
+  while (ssid == "") {
+    if (SerialBT.available()) {
+      ssid = SerialBT.readString();
+      ssid.trim();
+    }
+    delay(100);
+  }
+  SerialBT.print("SSID recibido: ");
+  SerialBT.println(ssid);
+  
+  SerialBT.println("Ingresa la contraseña de la red:");
+  while (password == "") {
+    if (SerialBT.available()) {
+      password = SerialBT.readString();
+      password.trim();
+    }
+    delay(100);
+  }
+  SerialBT.print("Contraseña recibida: ");
+  SerialBT.println(password);
+  
+  // Validar que ambos campos no estén vacíos
+  if (ssid.length() == 0 || password.length() == 0) {
+    SerialBT.println("Error: SSID y contraseña no pueden estar vacíos.");
+    return;
+  }
+  
+  SerialBT.println("Conectando a WiFi...");
+  
+  WiFi.begin(ssid, password);
+  unsigned long startAttemptTime = millis();
+
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 15000) {
+    delay(500); SerialBT.print("."); 
+  } if (WiFi.status() == WL_CONNECTED) { 
+    SerialBT.println("\nConectado a WiFi con éxito!");
+    SerialBT.print("IP: ");
+    SerialBT.println(WiFi.localIP()); 
+  } else {
+    SerialBT.println("\nNo se pudo conectar. Verifica SSID/contraseña."); 
+  } 
+}
+
+void iniciarPortalCautivo() {
+  SerialBT.println("Iniciando punto de acceso...");
+
+  Serial.print("Creando red Wi-Fi co el nombre: ");
+  Serial.println(AP_SSID);
+
+  if (WiFi.softAP(AP_SSID, AP_PASS)) {
+    Serial.println("Red creada exitosamente");
+    Serial.print("La dirección IP del Access Point es: ");
+    Serial.println(WiFi.softAPIP());
+  } else {
+    Serial.println("Error al crear la red Wi-Fi");
+  }
+}
+
+void flushBluetoothInput() {
+  while (SerialBT.available()) {
+    SerialBT.read();
+  }
+  delay(50);
 }
