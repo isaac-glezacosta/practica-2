@@ -7,12 +7,16 @@
 #include "AS5600.h"
 
 // Declaración de variables
-const int E18D80NK_PIN = 34;
+const int E18D80NK_PIN = 26;
 const int AS5600_SDA = 21;
 const int AS5600_SCL = 22;
 
 volatile unsigned int conteoCajas = 0;
 int estadoAnterior = HIGH;
+int estadoActual = LOW;
+unsigned ultimoTiempoLectura = 0;
+const unsigned long intervaloLectura = 500;
+int ultimoAnguloAS5600=0;
 
 // Access point
 const char* AP_SSID = "ESP32_AP";
@@ -38,6 +42,7 @@ void handleRoot();
 void handleNotFound();
 void flushBluetoothInput();
 
+
 // Setup
 void setup() {
   Serial.begin(9600);
@@ -61,10 +66,17 @@ void loop() {
     
     switch (opcion) {
       case '1':
-        leerAS5600();
+        SerialBT.println(ultimoAnguloAS5600);
         break;
       case '2':
-        leerE18D80NK();
+        estadoActual = digitalRead(E18D80NK_PIN);
+        if (estadoActual == LOW) { 
+          SerialBT.println("OBSTACULO");
+        } else {
+          SerialBT.println("LIBRE");
+        }
+        SerialBT.print("Cajas totales: ");
+        SerialBT.println(conteoCajas);
         break;
       case '3':
         conectarWiFi();
@@ -87,6 +99,29 @@ void loop() {
   
   if (WiFi.getMode() == WIFI_AP) {
     dnsServer.processNextRequest();  // Procesar DNS para portal cautivo
+    server.handleClient();
+  }
+
+   // Actualización periódica de sensores
+  if (millis() - ultimoTiempoLectura >= intervaloLectura) {
+    ultimoTiempoLectura = millis();
+
+    // Sensor E18
+    estadoActual = digitalRead(E18D80NK_PIN);
+    if (estadoAnterior == HIGH && estadoActual == LOW) {
+      conteoCajas++;
+    }
+    estadoAnterior = estadoActual;
+
+    // Sensor AS5600
+    if (as5600.isConnected()) {
+      ultimoAnguloAS5600 = as5600.readAngle();
+    }
+  }
+
+  // --- Portal cautivo activo ---
+  if (WiFi.getMode() == WIFI_AP) {
+    dnsServer.processNextRequest();
     server.handleClient();
   }
 }
@@ -128,8 +163,6 @@ void leerAS5600() {
     SerialBT.println("Error: Sensor AS5600 no detectado");
   }
 }
-
-
 
 void conectarWiFi() {
   String ssid = "";
@@ -280,4 +313,162 @@ void flushBluetoothInput() {
     SerialBT.read();
   }
   delay(50);
+}
+
+
+
+void conectarWiFi() {
+  String ssid = "";
+  String password = "";
+
+  // Limpiar buffer antes de empezar
+  flushBluetoothInput();
+  
+  SerialBT.println(F("Ingresa SSID de la red WiFi:")); 
+  unsigned long startTime = millis();
+  while (ssid == "" && millis() - startTime < 30000) { // Timeout de 30s
+    if (SerialBT.available()) {
+      ssid = SerialBT.readString();
+      ssid.trim();
+    }
+    yield(); // No bloquear el watchdog
+    delay(50); // Delay mínimo
+  }
+  
+  if (ssid == "") {
+    SerialBT.println(F("Timeout - No se recibió SSID"));
+    return;
+  }
+  
+  SerialBT.print(F("SSID recibido: "));
+  SerialBT.println(ssid);
+  
+  SerialBT.println(F("Ingresa la contraseña de la red:"));
+  startTime = millis();
+  while (password == "" && millis() - startTime < 30000) { // Timeout de 30s
+    if (SerialBT.available()) {
+      password = SerialBT.readString();
+      password.trim();
+    }
+    yield();
+    delay(50);
+  }
+  
+  if (password == "") {
+    SerialBT.println(F("Timeout - No se recibió contraseña"));
+    return;
+  }
+  
+  SerialBT.print(F("Contraseña recibida: "));
+  SerialBT.println(password);
+  
+  // Validar que ambos campos no estén vacíos
+  if (ssid.length() == 0 || password.length() == 0) {
+    SerialBT.println(F("Error: SSID y contraseña no pueden estar vacíos."));
+    return;
+  }
+  
+  SerialBT.println(F("Conectando a WiFi..."));
+  
+  WiFi.begin(ssid, password);
+  unsigned long startAttemptTime = millis();
+
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 15000) {
+    delay(200); // Reducir delay para mejor responsividad
+    SerialBT.print(F(".")); 
+    yield(); // Permitir otras tareas
+  } 
+  
+  if (WiFi.status() == WL_CONNECTED) { 
+    SerialBT.println(F("\nConectado a WiFi con éxito!"));
+    SerialBT.print(F("IP: "));
+    SerialBT.println(WiFi.localIP()); 
+  } else {
+    SerialBT.println(F("\nNo se pudo conectar. Verifica SSID/contraseña.")); 
+  } 
+}
+
+void handleRoot() {
+  // Usar el buffer estático en lugar de crear nuevos strings
+  strcpy_P(htmlBuffer, HTML_TEMPLATE);
+  
+  // Reemplazar placeholders de manera eficiente
+  String counterStr = String(conteoCajas);
+  String proximityState, proximityColor;
+  String as5600Data;
+  
+  // Leer estado del sensor de proximidad
+  int estadoActual = digitalRead(E18D80NK_PIN);
+  if (estadoActual == HIGH) {
+    proximityState = F("LIBRE");
+    proximityColor = F("green");
+  } else {
+    proximityState = F("OBSTÁCULO DETECTADO");
+    proximityColor = F("red");
+  }
+  
+  // Leer datos del AS5600
+  if (as5600.isConnected()) {
+    int angulo = as5600.readAngle();
+    float grados = angulo * 0.087890625;
+    as5600Data = "<p>Ángulo: <strong>" + String(angulo) + "</strong> (RAW)</p>";
+    as5600Data += "<p>Grados: <strong>" + String(grados, 1) + "°</strong></p>";
+    as5600Data += "<p>Estado: <span style='color: green;'>Conectado</span></p>";
+  } else {
+    as5600Data = "<p>Estado: <span style='color: red;'>No conectado</span></p>";
+  }
+  
+  // Convertir a String para hacer los reemplazos
+  String html = String(htmlBuffer);
+  html.replace("%COUNTER%", counterStr);
+  html.replace("%AS5600_DATA%", as5600Data);
+  html.replace("%PROXIMITY_STATE%", proximityState);
+  html.replace("%PROXIMITY_COLOR%", proximityColor);
+  
+  server.send(200, F("text/html"), html);
+}
+
+void handleNotFound() {
+  // Rediriger todas las peticiones a la página principal
+  handleRoot();
+}
+
+void iniciarPortalCautivo() {
+  SerialBT.println(F("Iniciando portal cautivo..."));
+  
+  // Configurar AP con IP específica
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(apIP, apIP, netMsk);
+  
+  if (WiFi.softAP(AP_SSID, AP_PASS)) {
+    SerialBT.print(F("Portal cautivo creado: "));
+    SerialBT.println(AP_SSID);
+    SerialBT.print(F("IP: "));
+    SerialBT.println(WiFi.softAPIP());
+    
+    // Configurar servidor DNS para portal cautivo
+    dnsServer.start(DNS_PORT, "*", apIP);
+    
+    // Configurar rutas del servidor web
+    server.on("/", handleRoot);
+    server.on("/index.html", handleRoot);
+    server.on("/generate_204", handleRoot);  // Android
+    server.on("/fwlink", handleRoot);        // Microsoft
+    server.onNotFound(handleNotFound);       // Capturar todas las demás peticiones
+    
+    server.begin();
+    SerialBT.println(F("Servidor web iniciado"));
+    SerialBT.println(F("Conéctate a la red WiFi 'ESP32_AP'"));
+    SerialBT.println(F("El portal se abrirá automáticamente"));
+    SerialBT.println(F("O visita: http://192.168.4.1"));
+  } else {
+    SerialBT.println(F("Error al crear el punto de acceso"));
+  }
+}
+
+void flushBluetoothInput() {
+  while (SerialBT.available()) {
+    SerialBT.read();
+  }
+  delay(20); // Reducir delay
 }
